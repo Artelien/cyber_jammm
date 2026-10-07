@@ -1,0 +1,7 @@
+.venv/
+.env
+__pycache__/
+*.pt
+anomaly/data/sim_*.csv
+anomaly/models/*.joblib
+anomaly/data/calib_*.csv

@@ -1,0 +1,10 @@
+ultralytics
+opencv-python
+numpy
+pandas
+scikit-learn
+joblib
+matplotlib
+paho-mqtt>=2.0
+requests
+python-dotenv
