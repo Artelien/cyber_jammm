@@ -36,8 +36,16 @@ def main():
 
     def on_message(client, userdata, msg):
         try:
-            data = json.loads(msg.payload)
-            buffer.append({k: data.get(k) for k in ("temp", "hum", "gas")})
+          data = json.loads(msg.payload)
+          required = ["temp", "hum", "gaz", "gaz_base"]
+          if any(data.get(k) is None for k in required):
+            print("Message incomplet ignoré :", data)
+            return
+            buffer.append({
+              "temp": data.get("temp"),
+              "hum": data.get("hum"),
+              "gaz": data.get("gaz"),
+              "gaz_base": data.get("gaz_base")})
         except json.JSONDecodeError:
             return
         if len(buffer) < window:
@@ -50,8 +58,14 @@ def main():
         score = float(model.decision_function(row)[0])
         abnormal = model.predict(row)[0] == -1
         state["streak"] = state["streak"] + 1 if abnormal else 0
-        print(f"temp={data.get('temp')} hum={data.get('hum')} gas={data.get('gas')} "
-              f"score={score:+.3f} {'ANORMAL' if abnormal else 'ok'}")
+        print(
+          f"temp={data.get('temp')} "
+          f"hum={data.get('hum')} "
+          f"gaz={data.get('gaz')} "
+          f"gaz_base={data.get('gaz_base')} "
+          f"score={score:+.3f} "
+          f"{'ANORMAL' if abnormal else 'ok'}"
+        )
 
         if state["streak"] >= needed:
             alert_type, top = explain(row.iloc[0], b["mean"], b["std"])
@@ -59,9 +73,19 @@ def main():
             if now - state["last_alert"].get(alert_type, 0) >= COOLDOWN_S:
                 state["last_alert"][alert_type] = now
                 level = "critical" if score < b["critical_threshold"] else "warning"
-                send_alert(build_alert("anomaly", alert_type, level, score, {
-                    "temp": data.get("temp"), "hum": data.get("hum"),
-                    "gas": data.get("gas"), "main_factor": top}))
+                send_alert(build_alert(
+                  "anomaly",
+                  alert_type,
+                  level,
+                  score,
+                  {
+                    "temp": data.get("temp"),
+                    "hum": data.get("hum"),
+                    "gaz": data.get("gaz"),
+                    "gaz_base": data.get("gaz_base"),
+                    "main_factor": top
+                  }
+                ))
 
     client = make_client("sentinel-ai-anomaly")
     client.on_connect, client.on_message = on_connect, on_message
