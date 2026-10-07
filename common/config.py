@@ -15,7 +15,7 @@ MQTT_USER = os.getenv("MQTT_USER") or None
 MQTT_PASS = os.getenv("MQTT_PASS") or None
 MQTT_CA = os.getenv("MQTT_CA") or None
 
-TOPIC_SENSORS = f"sentinel/{GROUP}/sensors"
+TOPIC_SENSORS = "sentinelx/telemetry"
 
 API_URL = os.getenv("API_URL") or None
 API_CA = os.getenv("API_CA") or None
