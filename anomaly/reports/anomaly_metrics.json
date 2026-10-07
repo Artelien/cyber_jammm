@@ -1,0 +1,16 @@
+{
+  "evenements_anomalie": 8,
+  "evenements_detectes": 6,
+  "detail_par_type": {
+    "gas_leak": "2/2",
+    "overheat": "1/2",
+    "humidity": "2/2",
+    "glitch": "1/2"
+  },
+  "delai_moyen_detection_s": 4.7,
+  "fausses_alertes": 0,
+  "fausses_alertes_par_heure": 0.0,
+  "precision_points": 1.0,
+  "rappel_points": 0.438,
+  "jeu_test": "anomaly/data/calib_test.csv"
+}
