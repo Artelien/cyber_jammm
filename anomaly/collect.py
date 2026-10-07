@@ -33,23 +33,36 @@ def main(out):
         print(f"Abonnée à {config.TOPIC_SENSORS} - enregistrement dans {out}")
 
     def on_message(client, userdata, msg):
-        try:
-            data = json.loads(msg.payload)
-        except json.JSONDecodeError:
-            print("Message ignoré (pas du JSON) :", msg.payload[:80]); return
-        writer.writerow(data); f.flush()
-        count["n"] += 1
-        if count["n"] % 30 == 0:
-            print(f"{count['n']} mesures enregistrées ({count['n'] * 2 // 60} min)")
-
-    client = make_client("sentinel-ai-collector")
-    client.on_connect, client.on_message = on_connect, on_message
     try:
-        client.loop_forever()
-    except KeyboardInterrupt:
-        print(f"\nArrêt : {count['n']} nouvelles mesures dans {out}")
-    finally:
-        f.close()
+        data = json.loads(msg.payload)
+
+    except json.JSONDecodeError:
+        print("Message ignoré (pas du JSON) :", msg.payload[:80])
+        return
+
+    required = [
+        "timestamp",
+        "temp",
+        "hum",
+        "gaz",
+        "gaz_base",
+        "mouvement"
+    ]
+
+    if any(data.get(k) is None for k in required):
+        print("Message incomplet ignoré :", data)
+        return
+
+    writer.writerow(data)
+    f.flush()
+
+    count["n"] += 1
+
+    if count["n"] % 30 == 0:
+        print(
+            f"{count['n']} mesures enregistrées "
+            f"({count['n'] * 2 // 60} min)"
+        )
 
 
 if __name__ == "__main__":
