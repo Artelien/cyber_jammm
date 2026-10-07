@@ -15,7 +15,7 @@ from pathlib import Path
 from common import config
 from common.mqtt_client import make_client
 
-COLUMNS = ["ts", "temp", "hum", "gas", "pir"]
+COLUMNS = ["timestamp", "temp", "hum", "gaz", "gaz_base", "mouvement"]
 
 
 def main(out):
