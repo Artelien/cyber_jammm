@@ -30,7 +30,7 @@ def build_alert(
     details = details or {}
 
     # ---------------------------------------------------------
-    # Conversion du niveau interne vers le format de l'API
+    # 1. Conversion du niveau interne vers le format de l'API
     # ---------------------------------------------------------
 
     level_mapping = {
@@ -44,9 +44,8 @@ def build_alert(
         "MEDIUM"
     )
 
-
     # ---------------------------------------------------------
-    # Création du message lisible
+    # 2. Création du message lisible
     # ---------------------------------------------------------
 
     if alert_type == "gas_leak":
@@ -67,26 +66,59 @@ def build_alert(
     else:
         message = "Anomalie detectee"
 
-
     # ---------------------------------------------------------
-    # Conversion du score Isolation Forest
-    # vers une échelle 0 - 100
-    #
-    # Plus le score IF est négatif, plus l'anomalie est forte.
+    # 3. Conversion du score vers une échelle 0 - 100
     # ---------------------------------------------------------
 
-    anomaly_score = float(value)
+    value = float(value)
 
-    score = int(
-        max(
-            0,
-            min(
-                100,
-                abs(anomaly_score) * 500
+    if source == "vision":
+
+        # YOLO renvoie une confiance entre 0 et 1.
+        #
+        # Exemple :
+        # 0.87 -> 87
+
+        score = int(
+            max(
+                0,
+                min(
+                    100,
+                    value * 100
+                )
             )
         )
-    )
 
+    elif source == "anomaly":
+
+        # Isolation Forest renvoie un score autour de 0.
+        #
+        # Plus le score est négatif,
+        # plus la mesure est considérée comme anormale.
+        #
+        # Exemple :
+        # -0.12 -> 60
+        #
+        # Cette conversion est provisoire et pourra être
+        # ajustée après observation des scores du modèle final.
+
+        score = int(
+            max(
+                0,
+                min(
+                    100,
+                    abs(value) * 500
+                )
+            )
+        )
+
+    else:
+
+        score = 0
+
+    # ---------------------------------------------------------
+    # 4. Format final attendu par l'API
+    # ---------------------------------------------------------
 
     return {
         "risk": risk,
@@ -96,16 +128,21 @@ def build_alert(
 
 
 def send_alert(alert):
-    """Envoie le résultat IA vers FastAPI."""
+    """Envoie le résultat IA vers l'API FastAPI."""
 
-    url = f"{config.API_BASE_URL}/analysis/result"
+    url = (
+        f"{config.API_BASE_URL}/analysis/result"
+    )
 
     headers = {
         "X-API-Key": config.API_KEY,
         "Content-Type": "application/json"
     }
 
-    print("Résultat IA :", alert)
+    print(
+        "Résultat IA :",
+        alert
+    )
 
     try:
 
@@ -118,14 +155,17 @@ def send_alert(alert):
 
         response.raise_for_status()
 
-        print("Résultat IA envoyé à l'API.")
+        print(
+            "Résultat IA envoyé à l'API."
+        )
 
         return True
 
     except requests.RequestException as e:
 
         print(
-            f"Erreur lors de l'envoi du résultat IA : {e}"
+            f"Erreur lors de l'envoi "
+            f"du résultat IA : {e}"
         )
 
         return False
