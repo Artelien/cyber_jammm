@@ -1,21 +1,47 @@
-"""Configuration commune aux scripts IA (lue depuis ai/.env, jamais commité)."""
+"""Configuration commune aux scripts IA.
+
+Les valeurs sensibles sont lues depuis le fichier ai/.env
+et ne doivent pas être commitées sur GitHub.
+"""
+
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-GROUP = os.getenv("GROUP", "G1")
-DEVICE_ID = os.getenv("DEVICE_ID", "SX-001")
+# ---------------------------------------------------------
+# Chargement du fichier .env situé dans le dossier ai/
+# ---------------------------------------------------------
 
-MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
-MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
-MQTT_USER = os.getenv("MQTT_USER") or None
-MQTT_PASS = os.getenv("MQTT_PASS") or None
-MQTT_CA = os.getenv("MQTT_CA") or None
+ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
-TOPIC_SENSORS = "sentinelx/telemetry"
+load_dotenv(ENV_FILE)
 
-API_URL = os.getenv("API_URL") or None
-API_CA = os.getenv("API_CA") or None
+
+# ---------------------------------------------------------
+# API FastAPI
+# ---------------------------------------------------------
+
+# Depuis Docker Compose, "api" correspond au nom du service API.
+API_BASE_URL = os.getenv(
+    "API_BASE_URL",
+    "http://api:8000"
+).rstrip("/")
+
+
+# Clé utilisée dans l'en-tête X-API-Key.
+API_KEY = os.getenv(
+    "API_KEY",
+    ""
+)
+
+
+# ---------------------------------------------------------
+# Informations du dispositif
+# ---------------------------------------------------------
+
+DEVICE_ID = os.getenv(
+    "DEVICE_ID",
+    "sentinel-x"
+)
