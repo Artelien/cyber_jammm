@@ -1,46 +1,131 @@
-"""Envoi des alertes IA vers l'API (POST /api/v1/alerts).
+"""Envoi des résultats de l'IA vers l'API FastAPI.
 
-Format JSON proposé (à valider avec DEV) :
+L'IA publie son dernier résultat avec :
+
+    POST /analysis/result
+
+Format attendu par l'API :
+
 {
-  "device_id": "SX-001",
-  "ts": 1728201302,                 # timestamp Unix en secondes
-  "source": "vision" | "anomaly",
-  "type": "intrusion" | "gas_leak" | "overheat" | "humidity" | "temperature",
-  "level": "warning" | "critical",
-  "value": 0.87,                    # confiance (vision) ou score d'anomalie
-  "details": {...}                  # infos utiles pour le dashboard
+    "risk": "LOW" | "MEDIUM" | "HIGH" | "CRITICAL",
+    "score": 0 à 100,
+    "message": "..."
 }
-Tant que API_URL est vide, l'alerte est seulement affichée dans le terminal.
 """
-import json
-import time
 
 import requests
 
 from . import config
 
 
-def build_alert(source, alert_type, level, value, details=None):
+def build_alert(
+    source,
+    alert_type,
+    level,
+    value,
+    details=None
+):
+    """Transforme le résultat interne de l'IA au format attendu par l'API."""
+
+    details = details or {}
+
+    # ---------------------------------------------------------
+    # Conversion du niveau interne vers le format de l'API
+    # ---------------------------------------------------------
+
+    level_mapping = {
+        "normal": "LOW",
+        "warning": "HIGH",
+        "critical": "CRITICAL",
+    }
+
+    risk = level_mapping.get(
+        level.lower(),
+        "MEDIUM"
+    )
+
+
+    # ---------------------------------------------------------
+    # Création du message lisible
+    # ---------------------------------------------------------
+
+    if alert_type == "gas_leak":
+        message = "Fuite de gaz suspectee"
+
+    elif alert_type == "overheat":
+        message = "Surchauffe detectee"
+
+    elif alert_type == "temperature":
+        message = "Temperature inhabituelle"
+
+    elif alert_type == "humidity":
+        message = "Humidite inhabituelle"
+
+    elif alert_type == "intrusion":
+        message = "Presence humaine detectee"
+
+    else:
+        message = "Anomalie detectee"
+
+
+    # ---------------------------------------------------------
+    # Conversion du score Isolation Forest
+    # vers une échelle 0 - 100
+    #
+    # Plus le score IF est négatif, plus l'anomalie est forte.
+    # ---------------------------------------------------------
+
+    anomaly_score = float(value)
+
+    score = int(
+        max(
+            0,
+            min(
+                100,
+                abs(anomaly_score) * 500
+            )
+        )
+    )
+
+
     return {
-        "device_id": config.DEVICE_ID,
-        "ts": int(time.time()),
-        "source": source,
-        "type": alert_type,
-        "level": level,
-        "value": round(float(value), 3),
-        "details": details or {},
+        "risk": risk,
+        "score": score,
+        "message": message
     }
 
 
 def send_alert(alert):
-    print("ALERTE", json.dumps(alert, ensure_ascii=False))
-    if not config.API_URL:
-        return False
+    """Envoie le résultat IA vers FastAPI."""
+
+    url = f"{config.API_BASE_URL}/analysis/result"
+
+    headers = {
+        "X-API-Key": config.API_KEY,
+        "Content-Type": "application/json"
+    }
+
+    print("Résultat IA :", alert)
+
     try:
-        r = requests.post(config.API_URL, json=alert, timeout=2,
-                          verify=config.API_CA or True)
-        r.raise_for_status()
+
+        response = requests.post(
+            url,
+            headers=headers,
+            json=alert,
+            timeout=5
+        )
+
+        response.raise_for_status()
+
+        print("Résultat IA envoyé à l'API.")
+
         return True
+
     except requests.RequestException as e:
-        print(f"  -> API injoignable : {e}")
+
+        print(
+            f"Erreur lors de l'envoi du résultat IA : {e}"
+        )
+
         return False
