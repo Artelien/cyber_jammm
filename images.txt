@@ -1,8 +1,0 @@
-IMAGE                       ID             DISK USAGE   CONTENT SIZE   EXTRA
-cyberjam-api:latest         3966b754e02b        228MB         54.9MB    U
-cyberjam-collector:latest   678681185244        205MB         49.6MB    U
-cyberjam-streamlit:latest   8b92dcb03efc        780MB          179MB    U
-eclipse-mosquitto:latest    38c0da4f2ef8       41.8MB         13.6MB    U
-hello-world:latest          5e2309035332       25.9kB         9.49kB    U
-mongo:latest                bac22ea7710d       1.47GB          375MB    U
-PS C:\Users\Komtora>
