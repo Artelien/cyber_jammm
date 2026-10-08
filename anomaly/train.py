@@ -1,180 +1,210 @@
-"""Entraînement de l'Isolation Forest sur des données NORMALES, puis évaluation.
+"""Entraînement du modèle Isolation Forest de Sentinel-X.
 
-  python -m anomaly.train                                   # simulé : sim_train.csv + sim_test.csv
-  python -m anomaly.train --train anomaly/data/train.csv --skip 90  # vraies données (90 lignes = 3 min de chauffe du MQ-2)
-  python -m anomaly.train --train anomaly/data/train.csv --model lof  # secours si moins de 30 min de données
-  python -m anomaly.train --train anomaly/data/calib_train.csv --test anomaly/data/calib_test.csv --real anomaly/data/train.csv
+Utilisation :
 
-Principe : l'Isolation Forest apprend à quoi ressemble le fonctionnement normal.
-Un point qu'il "isole" en peu de coupures est différent de tout ce qu'il a vu
--> anomalie. Aucun seuil écrit à la main.
+    python -m anomaly.train
 
-Sorties :
-  models/isoforest.joblib       modèle + statistiques (utilisé par detect_live.py)
-  reports/anomaly_metrics.json  métriques pour le dossier technique
-  reports/anomaly_eval.png      graphique pour le dossier / la soutenance
+ou avec un autre dataset :
+
+    python -m anomaly.train --train anomaly/data/mon_dataset.csv
+
+
+Le dataset doit contenir au minimum :
+
+    temp
+    hum
+    gaz
+    gaz_base
+
+Les mêmes features que celles utilisées en temps réel sont calculées
+avec anomaly.features.compute_features().
+
+Le modèle entraîné est sauvegardé dans :
+
+    anomaly/models/isoforest.joblib
 """
+
 import argparse
-import json
 from pathlib import Path
 
 import joblib
-import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
-from sklearn.metrics import precision_score, recall_score
-from sklearn.neighbors import LocalOutlierFactor
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
 
-from anomaly.features import FEATURES, WINDOW, compute_features
+from anomaly.features import (
+    FEATURES,
+    WINDOW,
+    RAW_COLUMNS,
+    compute_features,
+)
+
 
 HERE = Path(__file__).resolve().parent
-CONSECUTIVE = 3  # il faut 3 mesures anormales d'affilée (6 s) pour lever une alerte
+
+DEFAULT_DATASET = HERE / "data" / "train.csv"
+
+MODEL_PATH = HERE / "models" / "isoforest.joblib"
+
+# Nombre d'anomalies consécutives nécessaires
+# avant de déclencher une alerte en temps réel.
+CONSECUTIVE = 3
 
 
-def alerts_from_flags(flags: np.ndarray) -> np.ndarray:
-    s = pd.Series(flags.astype(int))
-    return (s.rolling(CONSECUTIVE).sum() >= CONSECUTIVE).to_numpy()
+def train(train_csv):
+    """Entraîne Isolation Forest à partir d'un dataset de fonctionnement normal."""
+
+    train_csv = Path(train_csv)
+
+    # ---------------------------------------------------------
+    # 1. Vérification du fichier
+    # ---------------------------------------------------------
+
+    if not train_csv.exists():
+        raise FileNotFoundError(
+            f"Dataset introuvable : {train_csv}"
+        )
+
+    print(f"Lecture du dataset : {train_csv}")
+
+    df = pd.read_csv(train_csv)
+
+    print(f"Nombre de mesures brutes : {len(df)}")
 
 
-def segments(mask):
-    """Liste des (début, fin) des zones où mask est vrai."""
-    out, start = [], None
-    for i, v in enumerate(mask):
-        if v and start is None:
-            start = i
-        if not v and start is not None:
-            out.append((start, i - 1)); start = None
-    if start is not None:
-        out.append((start, len(mask) - 1))
-    return out
+    # ---------------------------------------------------------
+    # 2. Vérification des colonnes nécessaires
+    # ---------------------------------------------------------
+
+    missing = [
+        col
+        for col in RAW_COLUMNS
+        if col not in df.columns
+    ]
+
+    if missing:
+        raise ValueError(
+            "Le dataset ne contient pas toutes les colonnes nécessaires.\n"
+            f"Colonnes manquantes : {missing}\n"
+            f"Colonnes attendues : {RAW_COLUMNS}"
+        )
 
 
-def train(train_csv, skip, model_name="if"):
-    df = pd.read_csv(train_csv).iloc[skip:].reset_index(drop=True)
+    # ---------------------------------------------------------
+    # 3. Calcul des features
+    # ---------------------------------------------------------
+
     X = compute_features(df)
-    if model_name == "lof":
-        # Secours si peu de données (< 30 min) : Local Outlier Factor, basé sur les
-        # distances, il reconnaît mieux une valeur jamais vue quand l'historique est court.
-        model = make_pipeline(StandardScaler(),
-                              LocalOutlierFactor(n_neighbors=20, novelty=True, contamination=0.005))
-    else:
-        # Chaque arbre voit toutes les données : arbres plus profonds -> meilleure
-        # séparation normal / anormal (testé : 256 -> 2048 -> tout = de mieux en mieux)
-        model = IsolationForest(n_estimators=300, max_samples=len(X),
-                                contamination=0.005, random_state=42)
+
+    if X.empty:
+        raise ValueError(
+            "Impossible de calculer les features. "
+            "Le dataset ne contient probablement pas assez de mesures."
+        )
+
+    print(f"Nombre de fenêtres utilisables : {len(X)}")
+
+    print("\nFeatures utilisées :")
+
+    for feature in FEATURES:
+        print(f" - {feature}")
+
+
+    # ---------------------------------------------------------
+    # 4. Création du modèle Isolation Forest
+    # ---------------------------------------------------------
+
+    model = IsolationForest(
+        n_estimators=300,
+        contamination=0.005,
+        random_state=42
+    )
+
+
+    # ---------------------------------------------------------
+    # 5. Entraînement
+    # ---------------------------------------------------------
+
+    print("\nEntraînement du modèle...")
+
     model.fit(X)
+
+    print("Entraînement terminé.")
+
+
+    # ---------------------------------------------------------
+    # 6. Scores sur les données d'entraînement
+    # ---------------------------------------------------------
+
     scores = model.decision_function(X)
+
+    predictions = model.predict(X)
+
+    nb_anomalies = int((predictions == -1).sum())
+
+    print(
+        f"Anomalies détectées dans les données d'entraînement : "
+        f"{nb_anomalies}/{len(X)}"
+    )
+
+
+    # ---------------------------------------------------------
+    # 7. Création du bundle
+    # ---------------------------------------------------------
+
     bundle = {
-        "model": model, "model_name": model_name, "features": FEATURES, "window": WINDOW,
+        "model": model,
+
+        "features": FEATURES,
+
+        "window": WINDOW,
+
         "consecutive": CONSECUTIVE,
-        "mean": X.mean(), "std": X.std(),
-        "critical_threshold": float(scores.min()),  # plus anormal que tout le normal vu
-        "trained_on": str(train_csv), "n_samples": int(len(X)),
+
+        # Statistiques utilisées par explain()
+        "mean": X.mean(),
+        "std": X.std(),
+
+        # Une valeur inférieure à tout ce qui a été observé
+        # pendant l'entraînement est considérée très anormale.
+        "critical_threshold": float(scores.min()),
+
+        "trained_on": train_csv.name,
+
+        "n_samples": int(len(X)),
     }
-    (HERE / "models").mkdir(exist_ok=True)
-    joblib.dump(bundle, HERE / "models" / "isoforest.joblib")
-    print(f"Modèle {model_name.upper()} entraîné sur {len(X)} fenêtres normales ({train_csv})")
+
+
+    # ---------------------------------------------------------
+    # 8. Sauvegarde
+    # ---------------------------------------------------------
+
+    MODEL_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    joblib.dump(
+        bundle,
+        MODEL_PATH
+    )
+
+    print(
+        f"\nModèle sauvegardé : {MODEL_PATH}"
+    )
+
     return bundle
 
 
-def evaluate(bundle, test_csv):
-    df = pd.read_csv(test_csv)
-    X = compute_features(df)
-    model = bundle["model"]
-    scores = model.decision_function(X)
-    flags = model.predict(X) == -1
-    alerts = alerts_from_flags(flags)
-
-    y = df.loc[X.index, "anomaly"].to_numpy().astype(bool)
-    # Les variations sur 30 s restent visibles 30 s après la fin d'une anomalie :
-    # une alerte dans cette zone n'est pas une fausse alerte.
-    tolerance = pd.Series(y.astype(int)).rolling(WINDOW, min_periods=1).max().to_numpy().astype(bool)
-
-    events = segments(y)
-    types = df.loc[X.index, "anomaly_type"].fillna("").to_numpy() if "anomaly_type" in df else None
-    detected, delays, per_type = 0, [], {}
-    for s, e in events:
-        hit = np.where(alerts[s:e + 1])[0]  # strict : l'alerte doit tomber PENDANT l'anomalie
-        name = types[s] if types is not None else "anomalie"
-        per_type.setdefault(name, [0, 0])[1] += 1
-        if len(hit):
-            detected += 1
-            per_type[name][0] += 1
-            delays.append(int(hit[0]) * 2)
-    onsets = [s for s, _ in segments(alerts)]
-    false_alarms = sum(1 for s in onsets if not tolerance[s])
-    duration_h = len(X) * 2 / 3600
-
-    metrics = {
-        "evenements_anomalie": len(events),
-        "evenements_detectes": detected,
-        "detail_par_type": {k: f"{d}/{n}" for k, (d, n) in per_type.items()},
-        "delai_moyen_detection_s": round(float(np.mean(delays)), 1) if delays else None,
-        "fausses_alertes": false_alarms,
-        "fausses_alertes_par_heure": round(false_alarms / duration_h, 2),
-        "precision_points": round(float(precision_score(tolerance, alerts, zero_division=0)), 3),
-        "rappel_points": round(float(recall_score(y, alerts, zero_division=0)), 3),
-        "jeu_test": str(test_csv),
-    }
-    (HERE / "reports").mkdir(exist_ok=True)
-    (HERE / "reports" / "anomaly_metrics.json").write_text(json.dumps(metrics, indent=2, ensure_ascii=False))
-    print(json.dumps(metrics, indent=2, ensure_ascii=False))
-    plot(df.loc[X.index].reset_index(drop=True), scores, alerts, y)
-
-
-def plot(df, scores, alerts, y):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    t = np.arange(len(df)) * 2 / 60  # minutes
-    fig, axes = plt.subplots(4, 1, figsize=(12, 9), sharex=True)
-    series = [("temp", "Température (°C)"), ("hum", "Humidité (%)"), ("gas", "Gaz MQ-2 (ADC)")]
-    for ax, (col, label) in zip(axes, series):
-        ax.plot(t, df[col], lw=1, color="#1d4ed8")
-        ax.set_ylabel(label)
-    axes[3].plot(t, scores, lw=1, color="#334155")
-    axes[3].axhline(0, color="#dc2626", ls="--", lw=1)
-    axes[3].set_ylabel("Score IF\n(< 0 = anormal)")
-    axes[3].set_xlabel("Temps (min)")
-    for ax in axes:
-        for s, e in segments(y):
-            ax.axvspan(t[s], t[e], color="#fde68a", alpha=0.6, lw=0)
-        for s, e in segments(alerts):
-            ax.axvspan(t[s], t[e], color="#dc2626", alpha=0.25, lw=0)
-    axes[0].set_title("Isolation Forest - jaune : anomalies réelles, rouge : alertes levées")
-    fig.tight_layout()
-    fig.savefig(HERE / "reports" / "anomaly_eval.png", dpi=130)
-    print(f"Graphique : {HERE / 'reports' / 'anomaly_eval.png'}")
-
-
 if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument("--train", default=str(HERE / "data" / "sim_train.csv"))
-    p.add_argument("--test", default=None,
-                   help="jeu de test étiqueté (par défaut : sim_test.csv si on entraîne sur le simulé)")
-    p.add_argument("--skip", type=int, default=0, help="lignes ignorées au début (chauffe du MQ-2)")
-    p.add_argument("--real", default=None,
-                   help="vraies mesures normales : vérifie que le modèle ne sonne pas dessus")
-    p.add_argument("--model", choices=["if", "lof"], default="if",
-                   help="if = Isolation Forest (défaut) ; lof = secours si moins de 30 min de données")
-    a = p.parse_args()
-    b = train(a.train, a.skip, a.model)
-    test = a.test or (str(HERE / "data" / "sim_test.csv") if "sim_train" in a.train else None)
-    if test and Path(test).exists():
-        evaluate(b, test)
-        if a.real:
-            Xr = compute_features(pd.read_csv(a.real))
-            n_alerts = len(segments(alerts_from_flags(b["model"].predict(Xr) == -1)))
-            print(f"Validation sur les VRAIES mesures ({a.real}) : {n_alerts} fausse(s) alerte(s) "
-                  f"sur {len(Xr) * 2 / 60:.0f} min (idéal : 0)")
-    else:
-        # Pas de test étiqueté pour les vraies données : on vérifie au moins que le
-        # modèle ne sonne pas en permanence sur les données normales.
-        X = compute_features(pd.read_csv(a.train).iloc[a.skip:].reset_index(drop=True))
-        alerts = alerts_from_flags(b["model"].predict(X) == -1)
-        n_alerts = len(segments(alerts))
-        print(f"Vérification sur les données normales : {n_alerts} alerte(s) "
-              f"sur {len(X) * 2 / 60:.0f} min (idéal : 0)")
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--train",
+        default=str(DEFAULT_DATASET),
+        help="Chemin vers le dataset d'entraînement"
+    )
+
+    args = parser.parse_args()
+
+    train(args.train)
