@@ -1,17 +1,23 @@
-"""IA vision : détection d'intrus sur la webcam avec YOLOv8n.
+"""IA vision : détection de personnes sur la webcam avec YOLOv8n.
 
-  python -m vision.detect                 # webcam 0, fenêtre d'affichage
-  python -m vision.detect --cam 1         # webcam USB
-  python -m vision.detect --no-show       # sans fenêtre (sur le serveur)
-  python -m vision.detect --imgsz 416     # plus rapide si la latence dépasse 100 ms
-  python -m vision.detect --stream 8081   # flux vidéo annoté sur http://127.0.0.1:8081/video
+Lancement :
+    python -m vision.detect
+    python -m vision.detect --cam 1
+    python -m vision.detect --no-show
+    python -m vision.detect --imgsz 416
+    python -m vision.detect --stream 8081
 
-- Images réduites en 640x480 pour rester sous 100 ms par trame.
-- Alerte "intrusion" si une personne est vue sur 3 images d'affilée
-  (évite les fausses détections d'une seule image), puis 15 s de pause.
-- À l'arrêt (q ou Ctrl+C) : statistiques de latence dans reports/vision_latency.json
-  (moyenne, p95) -> à mettre dans le dossier technique.
+Fonctionnement :
+- webcam en 640x480 ;
+- YOLOv8n détecte uniquement les personnes ;
+- une alerte "intrusion" est envoyée si une personne est détectée
+  sur 3 images consécutives ;
+- délai de 15 secondes entre deux alertes pour éviter le spam ;
+- possibilité d'exposer le flux vidéo annoté en MJPEG ;
+- à l'arrêt, les statistiques de latence sont enregistrées
+  dans reports/vision_latency.json.
 """
+
 import argparse
 import json
 import os
@@ -26,106 +32,481 @@ from ultralytics import YOLO
 
 from common.alerts import build_alert, send_alert
 
+
 HERE = Path(__file__).resolve().parent
+
+# Nombre de frames consécutives nécessaires
+# avant de confirmer la présence d'une personne
 CONSECUTIVE = 3
+
+# Temps minimum entre deux alertes
 COOLDOWN_S = 15
-latest_jpeg = {"data": None}
+
+# Dernière image JPEG disponible pour le flux vidéo
+latest_jpeg = {
+    "data": None
+}
 
 
 class MJPEGHandler(BaseHTTPRequestHandler):
+    """Petit serveur HTTP pour diffuser le flux vidéo annoté."""
+
     def do_GET(self):
+
         if self.path != "/video":
-            self.send_error(404); return
+            self.send_error(404)
+            return
+
         self.send_response(200)
-        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+
+        self.send_header(
+            "Content-Type",
+            "multipart/x-mixed-replace; boundary=frame"
+        )
+
         self.end_headers()
+
         try:
+
             while True:
+
                 data = latest_jpeg["data"]
-                if data:
-                    self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + data + b"\r\n")
+
+                if data is not None:
+
+                    self.wfile.write(
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n\r\n"
+                        + data
+                        + b"\r\n"
+                    )
+
                 time.sleep(0.05)
-        except (BrokenPipeError, ConnectionResetError):
+
+        except (
+            BrokenPipeError,
+            ConnectionResetError
+        ):
             pass
 
     def log_message(self, *args):
+        # Évite d'afficher chaque requête HTTP dans le terminal
         pass
 
 
 def open_camera(index):
-    cap = cv2.VideoCapture(index, cv2.CAP_DSHOW) if os.name == "nt" else cv2.VideoCapture(index)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    """Ouvre la webcam et configure la résolution."""
+
+    if os.name == "nt":
+        cap = cv2.VideoCapture(
+            index,
+            cv2.CAP_DSHOW
+        )
+
+    else:
+        cap = cv2.VideoCapture(index)
+
+    cap.set(
+        cv2.CAP_PROP_FRAME_WIDTH,
+        640
+    )
+
+    cap.set(
+        cv2.CAP_PROP_FRAME_HEIGHT,
+        480
+    )
+
     if not cap.isOpened():
-        raise SystemExit(f"Webcam {index} introuvable : essaie --cam 1")
+        raise SystemExit(
+            f"Webcam {index} introuvable. "
+            f"Essaie par exemple --cam 1."
+        )
+
     return cap
 
 
-def main(a):
+def main(args):
+
+    # ---------------------------------------------------------
+    # 1. Chargement du modèle YOLO
+    # ---------------------------------------------------------
+
+    print("Chargement de YOLOv8n...")
+
     model = YOLO("yolov8n.pt")
-    cap = open_camera(a.cam)
-    if a.stream:
-        server = ThreadingHTTPServer((a.stream_host, a.stream), MJPEGHandler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        print(f"Flux vidéo : http://{a.stream_host}:{a.stream}/video")
 
-    latencies, streak, last_alert, n = [], 0, 0.0, 0
+    print("Modèle YOLO chargé.")
+
+
+    # ---------------------------------------------------------
+    # 2. Ouverture de la webcam
+    # ---------------------------------------------------------
+
+    cap = open_camera(args.cam)
+
+    print(f"Webcam {args.cam} ouverte.")
+
+
+    # ---------------------------------------------------------
+    # 3. Démarrage éventuel du flux vidéo MJPEG
+    # ---------------------------------------------------------
+
+    if args.stream:
+
+        server = ThreadingHTTPServer(
+            (
+                args.stream_host,
+                args.stream
+            ),
+            MJPEGHandler
+        )
+
+        threading.Thread(
+            target=server.serve_forever,
+            daemon=True
+        ).start()
+
+        print(
+            f"Flux vidéo : "
+            f"http://{args.stream_host}:"
+            f"{args.stream}/video"
+        )
+
+
+    # ---------------------------------------------------------
+    # Variables de fonctionnement
+    # ---------------------------------------------------------
+
+    latencies = []
+
+    streak = 0
+
+    last_alert = 0.0
+
+    frame_count = 0
+
+
     try:
+
         while True:
+
+            # -------------------------------------------------
+            # 4. Lecture d'une image webcam
+            # -------------------------------------------------
+
             ok, frame = cap.read()
+
             if not ok:
-                print("Lecture webcam impossible"); break
-            frame = cv2.resize(frame, (640, 480))
+                print("Lecture webcam impossible.")
+                break
 
-            t0 = time.perf_counter()
-            res = model(frame, classes=[0], conf=a.conf, imgsz=a.imgsz, verbose=False)[0]  # classe 0 = personne
-            ms = (time.perf_counter() - t0) * 1000
-            n += 1
-            if n > 10:  # on ignore le temps de chauffe du modèle
-                latencies.append(ms)
 
-            persons = len(res.boxes)
-            streak = streak + 1 if persons else 0
-            if streak >= CONSECUTIVE and time.time() - last_alert >= COOLDOWN_S:
+            frame = cv2.resize(
+                frame,
+                (640, 480)
+            )
+
+
+            # -------------------------------------------------
+            # 5. Détection YOLO
+            # -------------------------------------------------
+
+            start = time.perf_counter()
+
+            result = model(
+                frame,
+
+                # Classe COCO 0 = personne
+                classes=[0],
+
+                conf=args.conf,
+
+                imgsz=args.imgsz,
+
+                verbose=False
+
+            )[0]
+
+            latency_ms = (
+                time.perf_counter() - start
+            ) * 1000
+
+
+            # -------------------------------------------------
+            # 6. Mesure de la latence
+            # -------------------------------------------------
+
+            frame_count += 1
+
+            # Les premières inférences sont souvent plus lentes
+            if frame_count > 10:
+                latencies.append(
+                    latency_ms
+                )
+
+
+            # -------------------------------------------------
+            # 7. Comptage des personnes détectées
+            # -------------------------------------------------
+
+            persons = len(result.boxes)
+
+
+            # -------------------------------------------------
+            # 8. Vérification sur plusieurs frames
+            # -------------------------------------------------
+
+            if persons > 0:
+                streak += 1
+            else:
+                streak = 0
+
+
+            # -------------------------------------------------
+            # 9. Déclenchement d'une alerte intrusion
+            # -------------------------------------------------
+
+            if (
+                streak >= CONSECUTIVE
+                and
+                time.time() - last_alert >= COOLDOWN_S
+            ):
+
                 last_alert = time.time()
-                conf = float(res.boxes.conf.max())
-                send_alert(build_alert("vision", "intrusion", "critical", conf,
-                                       {"persons": persons, "latency_ms": round(ms, 1)}))
 
-            image = res.plot()
-            color = (0, 0, 255) if persons else (0, 200, 0)
-            cv2.putText(image, f"{ms:.0f} ms | personnes : {persons}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-            if a.stream:
-                latest_jpeg["data"] = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 70])[1].tobytes()
-            if a.show:
-                cv2.imshow("Sentinel-X vision", image)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+                confidence = float(
+                    result.boxes.conf.max()
+                )
+
+                alert = build_alert(
+                    source="vision",
+                    alert_type="intrusion",
+                    level="critical",
+                    value=confidence,
+                    details={
+                        "persons": persons,
+                        "latency_ms": round(
+                            latency_ms,
+                            1
+                        )
+                    }
+                )
+
+                send_alert(alert)
+
+
+            # -------------------------------------------------
+            # 10. Création de l'image annotée
+            # -------------------------------------------------
+
+            image = result.plot()
+
+            color = (
+                (0, 0, 255)
+                if persons > 0
+                else (0, 200, 0)
+            )
+
+            cv2.putText(
+                image,
+                (
+                    f"{latency_ms:.0f} ms | "
+                    f"personnes : {persons}"
+                ),
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                color,
+                2
+            )
+
+
+            # -------------------------------------------------
+            # 11. Mise à disposition du flux vidéo
+            # -------------------------------------------------
+
+            if args.stream:
+
+                success, encoded = cv2.imencode(
+                    ".jpg",
+                    image,
+                    [
+                        cv2.IMWRITE_JPEG_QUALITY,
+                        70
+                    ]
+                )
+
+                if success:
+                    latest_jpeg["data"] = (
+                        encoded.tobytes()
+                    )
+
+
+            # -------------------------------------------------
+            # 12. Affichage local
+            # -------------------------------------------------
+
+            if args.show:
+
+                cv2.imshow(
+                    "Sentinel-X Vision",
+                    image
+                )
+
+                if (
+                    cv2.waitKey(1) & 0xFF
+                    == ord("q")
+                ):
                     break
-            if latencies and n % 50 == 0:
-                print(f"latence moyenne {np.mean(latencies):.0f} ms | p95 {np.percentile(latencies, 95):.0f} ms")
+
+
+            # -------------------------------------------------
+            # Affichage périodique des performances
+            # -------------------------------------------------
+
+            if (
+                latencies
+                and frame_count % 50 == 0
+            ):
+
+                print(
+                    f"Latence moyenne : "
+                    f"{np.mean(latencies):.0f} ms | "
+                    f"p95 : "
+                    f"{np.percentile(latencies, 95):.0f} ms"
+                )
+
+
     except KeyboardInterrupt:
-        pass
+
+        print("\nArrêt demandé.")
+
+
     finally:
+
+        # -----------------------------------------------------
+        # 13. Fermeture de la webcam
+        # -----------------------------------------------------
+
         cap.release()
+
         cv2.destroyAllWindows()
+
+
+        # -----------------------------------------------------
+        # 14. Sauvegarde du rapport de latence
+        # -----------------------------------------------------
+
         if latencies:
-            stats = {"frames": len(latencies), "resolution": "640x480", "imgsz": a.imgsz, "modele": "yolov8n",
-                     "latence_moyenne_ms": round(float(np.mean(latencies)), 1),
-                     "latence_p95_ms": round(float(np.percentile(latencies, 95)), 1),
-                     "objectif_100ms_respecte": bool(np.percentile(latencies, 95) < 100)}
-            (HERE / "reports").mkdir(exist_ok=True)
-            (HERE / "reports" / "vision_latency.json").write_text(json.dumps(stats, indent=2, ensure_ascii=False))
-            print(json.dumps(stats, indent=2, ensure_ascii=False))
+
+            p95 = float(
+                np.percentile(
+                    latencies,
+                    95
+                )
+            )
+
+            stats = {
+                "frames": len(latencies),
+                "resolution": "640x480",
+                "imgsz": args.imgsz,
+                "modele": "yolov8n",
+
+                "latence_moyenne_ms": round(
+                    float(
+                        np.mean(latencies)
+                    ),
+                    1
+                ),
+
+                "latence_p95_ms": round(
+                    p95,
+                    1
+                ),
+
+                "objectif_100ms_respecte": (
+                    p95 < 100
+                )
+            }
+
+            reports_dir = (
+                HERE / "reports"
+            )
+
+            reports_dir.mkdir(
+                parents=True,
+                exist_ok=True
+            )
+
+            report_file = (
+                reports_dir
+                / "vision_latency.json"
+            )
+
+            report_file.write_text(
+                json.dumps(
+                    stats,
+                    indent=2,
+                    ensure_ascii=False
+                )
+            )
+
+            print("\nRapport de latence :")
+
+            print(
+                json.dumps(
+                    stats,
+                    indent=2,
+                    ensure_ascii=False
+                )
+            )
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument("--cam", type=int, default=0)
-    p.add_argument("--conf", type=float, default=0.5)
-    p.add_argument("--imgsz", type=int, default=640, help="taille d'analyse YOLO (480 ou 416 si > 100 ms)")
-    p.add_argument("--no-show", dest="show", action="store_false")
-    p.add_argument("--stream", type=int, default=0, help="port du flux MJPEG (0 = désactivé)")
-    p.add_argument("--stream-host", default="127.0.0.1",
-                   help="127.0.0.1 par défaut : exposer via l'API en HTTPS plutôt qu'en direct")
-    main(p.parse_args())
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--cam",
+        type=int,
+        default=0,
+        help="Index de la webcam"
+    )
+
+    parser.add_argument(
+        "--conf",
+        type=float,
+        default=0.5,
+        help="Confiance minimale YOLO"
+    )
+
+    parser.add_argument(
+        "--imgsz",
+        type=int,
+        default=416,
+        help="Taille d'analyse YOLO"
+    )
+
+    parser.add_argument(
+        "--no-show",
+        dest="show",
+        action="store_false",
+        help="Désactive la fenêtre OpenCV"
+    )
+
+    parser.add_argument(
+        "--stream",
+        type=int,
+        default=0,
+        help="Port du flux vidéo MJPEG"
+    )
+
+    parser.add_argument(
+        "--stream-host",
+        default="127.0.0.1",
+        help="Adresse d'écoute du flux vidéo"
+    )
+
+    main(
+        parser.parse_args()
+    )
