@@ -12,6 +12,7 @@ Fonctionnement :
 - YOLOv8n détecte uniquement les personnes ;
 - une alerte "intrusion" est envoyée si une personne est détectée
   sur 3 images consécutives ;
+- une capture annotée est enregistrée lors de l'intrusion ;
 - délai de 15 secondes entre deux alertes pour éviter le spam ;
 - possibilité d'exposer le flux vidéo annoté en MJPEG ;
 - à l'arrêt, les statistiques de latence sont enregistrées
@@ -23,6 +24,7 @@ import json
 import os
 import threading
 import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -35,14 +37,9 @@ from common.alerts import build_alert, send_alert
 
 HERE = Path(__file__).resolve().parent
 
-# Nombre de frames consécutives nécessaires
-# avant de confirmer la présence d'une personne
 CONSECUTIVE = 3
-
-# Temps minimum entre deux alertes
 COOLDOWN_S = 15
 
-# Dernière image JPEG disponible pour le flux vidéo
 latest_jpeg = {
     "data": None
 }
@@ -90,7 +87,6 @@ class MJPEGHandler(BaseHTTPRequestHandler):
             pass
 
     def log_message(self, *args):
-        # Évite d'afficher chaque requête HTTP dans le terminal
         pass
 
 
@@ -125,11 +121,36 @@ def open_camera(index):
     return cap
 
 
-def main(args):
+def save_capture(image, persons):
+    """Enregistre une capture annotée lorsqu'une intrusion est détectée."""
 
-    # ---------------------------------------------------------
-    # 1. Chargement du modèle YOLO
-    # ---------------------------------------------------------
+    captures_dir = HERE / "captures"
+
+    captures_dir.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    timestamp = datetime.now().strftime(
+        "%Y-%m-%d_%H-%M-%S"
+    )
+
+    filename = (
+        captures_dir
+        / f"intrusion_{timestamp}_{persons}personnes.jpg"
+    )
+
+    cv2.imwrite(
+        str(filename),
+        image
+    )
+
+    print(
+        f"Capture enregistrée : {filename}"
+    )
+
+
+def main(args):
 
     print("Chargement de YOLOv8n...")
 
@@ -137,19 +158,9 @@ def main(args):
 
     print("Modèle YOLO chargé.")
 
-
-    # ---------------------------------------------------------
-    # 2. Ouverture de la webcam
-    # ---------------------------------------------------------
-
     cap = open_camera(args.cam)
 
     print(f"Webcam {args.cam} ouverte.")
-
-
-    # ---------------------------------------------------------
-    # 3. Démarrage éventuel du flux vidéo MJPEG
-    # ---------------------------------------------------------
 
     if args.stream:
 
@@ -172,11 +183,6 @@ def main(args):
             f"{args.stream}/video"
         )
 
-
-    # ---------------------------------------------------------
-    # Variables de fonctionnement
-    # ---------------------------------------------------------
-
     latencies = []
 
     streak = 0
@@ -185,14 +191,9 @@ def main(args):
 
     frame_count = 0
 
-
     try:
 
         while True:
-
-            # -------------------------------------------------
-            # 4. Lecture d'une image webcam
-            # -------------------------------------------------
 
             ok, frame = cap.read()
 
@@ -200,105 +201,40 @@ def main(args):
                 print("Lecture webcam impossible.")
                 break
 
-
             frame = cv2.resize(
                 frame,
                 (640, 480)
             )
 
-
-            # -------------------------------------------------
-            # 5. Détection YOLO
-            # -------------------------------------------------
-
             start = time.perf_counter()
 
             result = model(
                 frame,
-
-                # Classe COCO 0 = personne
                 classes=[0],
-
                 conf=args.conf,
-
                 imgsz=args.imgsz,
-
                 verbose=False
-
             )[0]
 
             latency_ms = (
                 time.perf_counter() - start
             ) * 1000
 
-
-            # -------------------------------------------------
-            # 6. Mesure de la latence
-            # -------------------------------------------------
-
             frame_count += 1
 
-            # Les premières inférences sont souvent plus lentes
             if frame_count > 10:
                 latencies.append(
                     latency_ms
                 )
 
-
-            # -------------------------------------------------
-            # 7. Comptage des personnes détectées
-            # -------------------------------------------------
-
             persons = len(result.boxes)
-
-
-            # -------------------------------------------------
-            # 8. Vérification sur plusieurs frames
-            # -------------------------------------------------
 
             if persons > 0:
                 streak += 1
             else:
                 streak = 0
 
-
-            # -------------------------------------------------
-            # 9. Déclenchement d'une alerte intrusion
-            # -------------------------------------------------
-
-            if (
-                streak >= CONSECUTIVE
-                and
-                time.time() - last_alert >= COOLDOWN_S
-            ):
-
-                last_alert = time.time()
-
-                confidence = float(
-                    result.boxes.conf.max()
-                )
-
-                alert = build_alert(
-                    source="vision",
-                    alert_type="intrusion",
-                    level="critical",
-                    value=confidence,
-                    details={
-                        "persons": persons,
-                        "latency_ms": round(
-                            latency_ms,
-                            1
-                        )
-                    }
-                )
-
-                send_alert(alert)
-
-
-            # -------------------------------------------------
-            # 10. Création de l'image annotée
-            # -------------------------------------------------
-
+            # Image annotée par YOLO
             image = result.plot()
 
             color = (
@@ -320,10 +256,43 @@ def main(args):
                 2
             )
 
+            # -------------------------------------------------
+            # Intrusion confirmée
+            # -------------------------------------------------
 
-            # -------------------------------------------------
-            # 11. Mise à disposition du flux vidéo
-            # -------------------------------------------------
+            if (
+                streak >= CONSECUTIVE
+                and
+                time.time() - last_alert >= COOLDOWN_S
+            ):
+
+                last_alert = time.time()
+
+                confidence = float(
+                    result.boxes.conf.max()
+                )
+
+                # Sauvegarde de la capture annotée
+                save_capture(
+                    image,
+                    persons
+                )
+
+                alert = build_alert(
+                    source="vision",
+                    alert_type="intrusion",
+                    level="critical",
+                    value=confidence,
+                    details={
+                        "persons": persons,
+                        "latency_ms": round(
+                            latency_ms,
+                            1
+                        )
+                    }
+                )
+
+                send_alert(alert)
 
             if args.stream:
 
@@ -341,11 +310,6 @@ def main(args):
                         encoded.tobytes()
                     )
 
-
-            # -------------------------------------------------
-            # 12. Affichage local
-            # -------------------------------------------------
-
             if args.show:
 
                 cv2.imshow(
@@ -359,11 +323,6 @@ def main(args):
                 ):
                     break
 
-
-            # -------------------------------------------------
-            # Affichage périodique des performances
-            # -------------------------------------------------
-
             if (
                 latencies
                 and frame_count % 50 == 0
@@ -376,26 +335,15 @@ def main(args):
                     f"{np.percentile(latencies, 95):.0f} ms"
                 )
 
-
     except KeyboardInterrupt:
 
         print("\nArrêt demandé.")
 
-
     finally:
-
-        # -----------------------------------------------------
-        # 13. Fermeture de la webcam
-        # -----------------------------------------------------
 
         cap.release()
 
         cv2.destroyAllWindows()
-
-
-        # -----------------------------------------------------
-        # 14. Sauvegarde du rapport de latence
-        # -----------------------------------------------------
 
         if latencies:
 
