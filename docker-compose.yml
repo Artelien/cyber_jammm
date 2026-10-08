@@ -1,0 +1,49 @@
+services:
+
+  mongodb:
+    image: mongo
+    container_name: mongodb
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+    - mongodb_data:/data/db
+
+  mosquitto:
+    image: eclipse-mosquitto
+    container_name: mosquitto
+    ports:
+      - "192.168.137.1:8883:8883"
+    volumes:
+      - ./mosquitto:/mosquitto/config
+
+  api:
+    build: ./api
+    image: cyberjam-api
+    container_name: api
+    environment:
+      - API_KEY=
+    ports:
+       - "127.0.0.1:8000:8000"
+    volumes:
+       - ./api/main.py:/app/main.py
+
+  collector:
+    image: cyberjam-collector
+    container_name: collector
+    depends_on:
+      - mosquitto
+      - mongodb
+    volumes:
+      - ./collector:/app
+
+  streamlit:
+    build: ./streamlit
+    image: cyberjam-streamlit
+    container_name: streamlit
+    ports:
+      - "127.0.0.1:8501:8501"
+    volumes:
+      - ./streamlit:/app
+      - ./ia/vision/captures:/captures
+volumes:
+    mongodb_data:
