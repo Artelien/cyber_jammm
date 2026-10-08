@@ -1,5 +1,0 @@
-streamlit
-pandas
-requests
-pillow
-streamlit-autorefresh
