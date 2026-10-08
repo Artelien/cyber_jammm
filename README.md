@@ -39,3 +39,37 @@ IA Python
 POST /analysis/result
   ↓
 Dashboard
+
+## 2. Module vision
+
+Le module vision utilise YOLOv8n avec OpenCV pour détecter la présence de personnes à partir de la webcam du PC serveur.
+
+La détection est limitée à la classe `person`.
+
+Une intrusion est confirmée lorsqu'une personne est détectée sur 3 images consécutives.
+
+Après confirmation :
+- une alerte est envoyée à l'API ;
+- une capture annotée est enregistrée dans `vision/captures/` ;
+- un délai de 15 secondes est appliqué avant une nouvelle alerte.
+
+### Performances
+
+Configuration utilisée :
+- résolution webcam : 640x480 ;
+- taille d'analyse YOLO : 416 px ;
+- modèle : YOLOv8n.
+
+Résultats mesurés :
+- latence moyenne : environ 27 ms ;
+- latence p95 : environ 35 ms ;
+- objectif inférieur à 100 ms respecté.
+
+Le rapport de latence est enregistré dans :
+
+`vision/reports/vision_latency.json`
+
+### Lancement
+
+```bash
+python -m vision.detect --cam 0 --imgsz 416
