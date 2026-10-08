@@ -4,8 +4,8 @@ La partie IA de Sentinel-X repose sur deux modules :
 
 | Module | Source de données | Rôle | Statut |
 |---|---|---|---|
-| **Vision** | Webcam USB du PC serveur | Détection de personnes / intrusion physique | ✅ Fonctionnel |
-| **Anomalies capteurs** | Télémétrie ESP32 récupérée via FastAPI | Détection de comportements anormaux des capteurs | ✅ Fonctionnel |
+| **Vision** | Webcam USB du PC serveur | Détection de personnes / intrusion physique | Fonctionnel |
+| **Anomalies capteurs** | Télémétrie ESP32 récupérée via FastAPI | Détection de comportements anormaux des capteurs | Fonctionnel |
 
 La partie IA est exécutée directement sur le **PC serveur** avec Python.
 
