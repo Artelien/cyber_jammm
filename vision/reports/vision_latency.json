@@ -1,9 +1,0 @@
-{
-  "frames": 372,
-  "resolution": "640x480",
-  "imgsz": 416,
-  "modele": "yolov8n",
-  "latence_moyenne_ms": 46.6,
-  "latence_p95_ms": 81.5,
-  "objectif_100ms_respecte": true
-}
